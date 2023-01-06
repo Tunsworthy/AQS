@@ -34,8 +34,12 @@
 #include <ESP8266WiFi.h>              // ESP8266 WiFi driver
 #include <PubSubClient.h>             // Required for MQTT
 #include "PMS.h"                      // Particulate Matter Sensor driver (embedded)
+#include "Adafruit_Sensor.h"        
+#include "Adafruit_AM2320.h"
 
 /*--------------------------- Global Variables ---------------------------*/
+Adafruit_AM2320 am2320 = Adafruit_AM2320();
+
 // Particulate matter sensor
 #define   PMS_STATE_ASLEEP        0   // Low power mode, laser and fan off
 #define   PMS_STATE_WAKING_UP     1   // Laser and fan on, not ready yet
@@ -63,11 +67,16 @@ uint32_t  g_pm10p0_ppd_value    = 0;  // Particles Per Deciliter pm10.0 reading
 uint8_t   g_uk_aqi_value        = 0;  // Air Quality Index value using UK reporting system
 uint16_t  g_us_aqi_value        = 0;  // Air Quality Index value using US reporting system
 
+float g_am2320_te_value     = 0.0; //Temp
+float g_am2320_hu_value     = 0.0; //humity
+
 // MQTT
 char g_mqtt_message_buffer[255];      // General purpose buffer for MQTT messages
 char g_command_topic[50];             // MQTT topic for receiving commands
 
 #if REPORT_MQTT_SEPARATE
+char g_am2320_te_mqtt_topic[50];       // MQTT topic for reporting tempreture 
+char g_am2320_hu_mqtt_topic[50];       // MQTT topic for reporting humitiy 
 char g_pm1p0_ae_mqtt_topic[50];       // MQTT topic for reporting pm1.0 AE value
 char g_pm2p5_ae_mqtt_topic[50];       // MQTT topic for reporting pm2.5 AE value
 char g_pm10p0_ae_mqtt_topic[50];      // MQTT topic for reporting pm10.0 AE value
@@ -172,6 +181,8 @@ void setup()
   // the result is of the form: "tele/d9616f/AE1P0" etc
   sprintf(g_command_topic,         "cmnd/%x/COMMAND",   ESP.getChipId());  // For receiving commands
 #if REPORT_MQTT_SEPARATE
+  sprintf(g_am2320_te_mqtt_topic,  "tele/%x/AM2320TE",  ESP.getChipId());  // Data from AM2320
+  sprintf(g_am2320_hu_mqtt_topic,  "tele/%x/AM2320Hu",  ESP.getChipId());  // Data from AM2320
   sprintf(g_pm1p0_ae_mqtt_topic,   "tele/%x/AE1P0",     ESP.getChipId());  // Data from PMS
   sprintf(g_pm2p5_ae_mqtt_topic,   "tele/%x/AE2P5",     ESP.getChipId());  // Data from PMS
   sprintf(g_pm10p0_ae_mqtt_topic,  "tele/%x/AE10P0",    ESP.getChipId());  // Data from PMS
@@ -203,6 +214,8 @@ void setup()
   Serial.println(g_pm10p0_ppd_mqtt_topic);  // From PMS
   Serial.println(g_uk_aqi_mqtt_topic);      // Calculated value
   Serial.println(g_us_aqi_mqtt_topic);      // Calculated value
+  Serial.println(g_am2320_te_mqtt_topic);      // Calculated value
+  Serial.println(g_am2320_hu_mqtt_topic);      // Calculated value
 #endif
 #if REPORT_MQTT_JSON
   Serial.println(g_mqtt_json_topic);        // From PMS
@@ -227,6 +240,12 @@ void setup()
   client.setServer(mqtt_broker, 1883);
   client.setCallback(mqttCallback);
   client.setBufferSize(255);
+
+  am2320.begin();
+  Serial.println("Am2320 Begin");
+  Serial.print("Temperature: "); Serial.println(am2320.readTemperature());
+  Serial.print("Humidity: "); Serial.println(am2320.readHumidity());
+
 }
 
 /**
@@ -242,7 +261,6 @@ void loop()
     }
   }
   client.loop();  // Process any outstanding MQTT messages
-
   checkModeButton();
   updatePmsReadings();
   renderScreen();
@@ -283,6 +301,7 @@ void checkModeButton()
 */
 void updatePmsReadings()
 {
+  //Serial.print("InUpdatePMS");Serial.println(g_pms_state);
   uint32_t time_now = millis();
 
   // Check if we've been in the sleep state for long enough
@@ -313,9 +332,11 @@ void updatePmsReadings()
   // Put the most recent values into globals for reference elsewhere
   if (PMS_STATE_READY == g_pms_state)
   {
+    Serial.println("In Ready IF");
     //pms.requestRead();
     if (pms.readUntil(g_data))  // Use a blocking road to make sure we get values
     {
+      Serial.println("In Read data");
       g_pm1p0_sp_value   = g_data.PM_SP_UG_1_0;
       g_pm2p5_sp_value   = g_data.PM_SP_UG_2_5;
       g_pm10p0_sp_value  = g_data.PM_SP_UG_10_0;
@@ -346,6 +367,7 @@ void updatePmsReadings()
 
       // Calculate AQI values for the various reporting standards
       calculateUkAqi();
+      get_am2320_values();
 
       // Report the new values
       reportToMqtt();
@@ -354,6 +376,7 @@ void updatePmsReadings()
       g_pms_state_start = time_now;
       g_pms_state = PMS_STATE_ASLEEP;
     }
+    
   }
 }
 
@@ -454,6 +477,27 @@ void renderScreen()
   OLED.display();
 }
 
+void get_am2320_values(){
+      Serial.println("In Get AM2320 Values");
+
+      g_am2320_te_value = am2320.readTemperature();
+      g_am2320_hu_value = am2320.readHumidity();
+
+      Serial.print("BL_Temperature: "); Serial.println(am2320.readTemperature());
+      int counter = 0; //count how many time we try to reboot the sensor
+
+      while (isnan(g_am2320_te_value)) { //ensure temp is a value, due to i2c am2320 issue
+        am2320.begin();
+          g_am2320_te_value = am2320.readTemperature();
+          g_am2320_hu_value = am2320.readHumidity();
+        counter++;
+        if (counter > 9) { //we have tried to boot the sensor 10 times, guess it's really down : (
+         break; //leave the while()
+        }
+      } 
+}
+
+
 /**
   Report the latest values to MQTT
 */
@@ -517,6 +561,16 @@ void reportToMqtt()
     message_string.toCharArray(g_mqtt_message_buffer, message_string.length() + 1);
     client.publish(g_uk_aqi_mqtt_topic, g_mqtt_message_buffer);
   }
+
+  /* Report te value */
+  message_string = String(g_am2320_te_value);
+  message_string.toCharArray(g_mqtt_message_buffer, message_string.length() + 1);
+  client.publish(g_am2320_te_mqtt_topic, g_mqtt_message_buffer);
+  
+  /* Report hu value */
+  message_string = String(g_am2320_hu_value);
+  message_string.toCharArray(g_mqtt_message_buffer, message_string.length() + 1);
+  client.publish(g_am2320_hu_mqtt_topic, g_mqtt_message_buffer);
 #endif
 
 #if REPORT_MQTT_JSON
@@ -536,16 +590,16 @@ void reportToMqtt()
   // Format the message as JSON in the outgoing message buffer:
   if (true == g_pms_ppd_readings_taken)
   {
-    sprintf(g_mqtt_message_buffer,  "{\"PMS5003\":{\"CF1\":%i,\"CF2.5\":%i,\"CF10\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i,\"PB0.3\":%i,\"PB0.5\":%i,\"PB1\":%i,\"PB2.5\":%i,\"PB5\":%i,\"PB10\":%i,\"UKAQI\":%i}}",
+    sprintf(g_mqtt_message_buffer,  "{\"PMS5003\":{\"CF1\":%i,\"CF2.5\":%i,\"CF10\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i,\"PB0.3\":%i,\"PB0.5\":%i,\"PB1\":%i,\"PB2.5\":%i,\"PB5\":%i,\"PB10\":%i,\"UKAQI\":%i},\"AM2320\":{\"Temperature\":%f,\"Humidity\":%f}}",
             g_pm1p0_sp_value, g_pm2p5_sp_value, g_pm10p0_sp_value,
             g_pm1p0_ae_value, g_pm2p5_ae_value, g_pm10p0_ae_value,
             g_pm0p3_ppd_value, g_pm0p5_ppd_value, g_pm1p0_ppd_value,
             g_pm2p5_ppd_value, g_pm5p0_ppd_value, g_pm10p0_ppd_value,
-            g_uk_aqi_value);
+            g_uk_aqi_value,g_am2320_te_value,g_am2320_hu_value);
   } else {
-    sprintf(g_mqtt_message_buffer,  "{\"PMS5003\":{\"CF1\":%i,\"CF2.5\":%i,\"CF10\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i}}",
+    sprintf(g_mqtt_message_buffer,  "{\"PMS5003\":{\"CF1\":%i,\"CF2.5\":%i,\"CF10\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i},\"AM2320\":{\"Temperature\":%f,\"Humidity\":%f}}",
             g_pm1p0_sp_value, g_pm2p5_sp_value, g_pm10p0_sp_value,
-            g_pm1p0_ae_value, g_pm2p5_ae_value, g_pm10p0_ae_value);
+            g_pm1p0_ae_value, g_pm2p5_ae_value, g_pm10p0_ae_value,g_am2320_te_value,g_am2320_hu_value);
   }
 
   client.publish(g_mqtt_json_topic, g_mqtt_message_buffer);
@@ -602,6 +656,14 @@ void reportToSerial()
     Serial.print("UKAQI:");
     Serial.println(String(g_uk_aqi_value));
   }
+  /* Report Temperature value */
+  Serial.print("Temperature:");
+  Serial.println(String(g_am2320_te_value));
+  
+  /* Report Humidity value */
+  Serial.print("Humidity:");
+  Serial.println(String(g_am2320_hu_value));
+
 }
 
 /**
