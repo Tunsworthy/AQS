@@ -36,12 +36,8 @@
 #include "PMS.h"                      // Particulate Matter Sensor driver (embedded)
 #include "Adafruit_Sensor.h"        
 #include "Adafruit_AM2320.h"
-#include "Adafruit_Sensor.h"        
-#include "Adafruit_AM2320.h"
 
 /*--------------------------- Global Variables ---------------------------*/
-Adafruit_AM2320 am2320 = Adafruit_AM2320();
-
 Adafruit_AM2320 am2320 = Adafruit_AM2320();
 
 // Particulate matter sensor
@@ -79,8 +75,6 @@ char g_mqtt_message_buffer[255];      // General purpose buffer for MQTT message
 char g_command_topic[50];             // MQTT topic for receiving commands
 
 #if REPORT_MQTT_SEPARATE
-char g_am2320_te_mqtt_topic[50];       // MQTT topic for reporting tempreture 
-char g_am2320_hu_mqtt_topic[50];       // MQTT topic for reporting humitiy 
 char g_am2320_te_mqtt_topic[50];       // MQTT topic for reporting tempreture 
 char g_am2320_hu_mqtt_topic[50];       // MQTT topic for reporting humitiy 
 char g_pm1p0_ae_mqtt_topic[50];       // MQTT topic for reporting pm1.0 AE value
